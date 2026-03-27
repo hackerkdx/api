@@ -52,8 +52,8 @@ const endpoints = [
 app.get("/", (req, res) => {
   res.status(200).json({
     success: true,
-    author: "Milan Bhandari",
-    contact: "https://www.milanb.com.np/",
+    author: "Kan Dinler",
+    contact: "https://kandinlerx.rf.gd/",
     message: "Universal Downloader API is running",
     endpoints,
   });
