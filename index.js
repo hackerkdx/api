@@ -63,7 +63,8 @@ app.get("/", (req, res) => {
 // ── TELEGRAM BOT ─────────────────────────────
 const BOT_TOKEN  = process.env.BOT_TOKEN;
 const TG_API     = `https://api.telegram.org/bot${BOT_TOKEN}`;
-const DOWNLOADER = 'https://kandinlerx.rf.gd/downloader/indir.php';
+const RAIDEN_BASE = 'https://api.raiden.ovh';
+const MILAN_BASE  = 'https://api-opal-omega-76.vercel.app/api';
 
 async function tg(method, params = {}) {
     const r = await fetch(`${TG_API}/${method}`, {
@@ -90,9 +91,125 @@ function detectPlatform(url) {
 }
 
 function getMediaUrl(item, source) {
-    const direct = ['tiktok','douyin','facebook','pinterest','snapchat'];
-    if (direct.includes(source)) return item.url;
-    return `https://kandinlerx.rf.gd/downloader/proxy.php?url=${encodeURIComponent(item.url)}&type=${item.type}&source=${source}`;
+    // Tüm URL'ler CDN'den direkt — proxy kullanmıyoruz
+    return item.url;
+}
+
+async function callBotDownloader(url, platform) {
+    const directSources = ['tiktok', 'douyin', 'facebook', 'pinterest', 'snapchat'];
+    let apiUrl, source = platform;
+
+    if (platform === 'instagram') {
+        apiUrl = `${RAIDEN_BASE}/insta?url=${encodeURIComponent(url)}`;
+    } else if (platform === 'tiktok') {
+        apiUrl = `${RAIDEN_BASE}/tk?url=${encodeURIComponent(url)}`;
+    } else if (platform === 'douyin') {
+        apiUrl = `${MILAN_BASE}/douyin/download?url=${encodeURIComponent(url)}`;
+    } else if (platform === 'twitter') {
+        apiUrl = `${RAIDEN_BASE}/x?url=${encodeURIComponent(url)}`;
+        source = 'twitter';
+    } else if (platform === 'facebook') {
+        // video: /share/r/, photo: /share/
+        if (/\/share\/r\//i.test(url) || /fb\.watch/i.test(url)) {
+            apiUrl = `${MILAN_BASE}/meta/download?url=${encodeURIComponent(url)}`;
+        } else {
+            apiUrl = `${RAIDEN_BASE}/fb?url=${encodeURIComponent(url)}`;
+        }
+    } else if (platform === 'snapchat') {
+        apiUrl = `${MILAN_BASE}/snapchat/download?url=${encodeURIComponent(url)}`;
+    } else if (platform === 'pinterest') {
+        apiUrl = `${MILAN_BASE}/pinterest/download?url=${encodeURIComponent(url)}`;
+    } else {
+        return { success: false, message: 'Desteklenmeyen platform.' };
+    }
+
+    const r = await fetch(apiUrl, {
+        headers: { 'User-Agent': 'KDXBot/1.0' },
+        signal: AbortSignal.timeout(30000),
+    });
+    const raw = await r.json();
+
+    // Normalize response to { success, source, media[], caption }
+    return normalizeBotResponse(raw, source, platform);
+}
+
+function normalizeBotResponse(raw, source, platform) {
+    const media = [];
+    let caption = null;
+
+    if (platform === 'instagram') {
+        caption = raw.title ?? raw.caption ?? null;
+        (raw.media || []).forEach(item => {
+            const url = item.download ?? item.url;
+            if (url) media.push({ type: item.type === 'video' ? 'video' : 'image', url, thumbnail: item.thumbnail });
+        });
+    } else if (platform === 'tiktok') {
+        caption = null;
+        (raw.media || []).forEach(item => {
+            if (item.type && item.url) {
+                media.push({ type: item.type === 'mp3' ? 'audio' : 'video', url: item.url, thumbnail: raw.thumbnail });
+            }
+        });
+    } else if (platform === 'douyin') {
+        caption = raw.data?.title ?? null;
+        (raw.data?.links || []).forEach(link => {
+            const lbl = (link.label || '').toLowerCase();
+            if (lbl.includes('mp4') && lbl.includes('hd') && link.url && link.url !== '#') {
+                if (!media.find(m => m.type === 'video')) media.push({ type: 'video', url: link.url, thumbnail: raw.data?.thumbnail });
+            }
+        });
+        if (!media.length) {
+            (raw.data?.links || []).forEach(link => {
+                if ((link.label||'').toLowerCase().includes('mp4') && link.url && link.url !== '#' && !media.length) {
+                    media.push({ type: 'video', url: link.url, thumbnail: raw.data?.thumbnail });
+                }
+            });
+        }
+    } else if (platform === 'twitter') {
+        caption = raw.caption ?? null;
+        (raw.media || []).forEach(item => {
+            const url = item.url ?? item.download;
+            if (item.type && url) media.push({ type: item.type, url, thumbnail: item.thumbnail });
+        });
+    } else if (platform === 'facebook') {
+        // Raiden fb (photos)
+        if (raw.media) {
+            caption = raw.caption ?? null;
+            raw.media.forEach(item => {
+                if (item.type === 'photo' && item.viewer_image_uri) {
+                    media.push({ type: 'image', url: item.viewer_image_uri });
+                }
+            });
+        }
+        // Milan meta (videos)
+        if (raw.data?.data) {
+            raw.data.data.forEach(item => {
+                if (!item.shouldRender && item.url) {
+                    media.push({ type: 'video', url: item.url, thumbnail: item.thumbnail });
+                }
+            });
+        }
+    } else if (platform === 'snapchat') {
+        caption = raw.data?.title ?? null;
+        (raw.data?.data?.snapList || []).forEach(snap => {
+            const url = snap.snapUrls?.mediaUrl;
+            if (url) media.push({ type: snap.snapMediaType === 1 ? 'video' : 'image', url, thumbnail: snap.snapUrls?.mediaPreviewUrl?.value });
+        });
+    } else if (platform === 'pinterest') {
+        caption = raw.data?.title ?? null;
+        let best = null, bestScore = -1;
+        (raw.data?.downloads || []).forEach(dl => {
+            if ((dl.format||'').toUpperCase() !== 'MP4' || !dl.url) return;
+            const q = dl.quality || '';
+            const score = q.includes('720') ? 100 : q.includes('360') ? 60 : q.includes('240') ? 40 : 10;
+            if (score > bestScore) { bestScore = score; best = dl; }
+        });
+        if (best) media.push({ type: 'video', url: best.url, thumbnail: raw.data?.thumbnail });
+        else if (raw.data?.thumbnail) media.push({ type: 'image', url: raw.data.thumbnail });
+    }
+
+    if (!media.length) return { success: false, message: 'İndirilebilir medya bulunamadı.' };
+    return { success: true, source, media, caption };
 }
 
 async function handleBotMessage(message) {
@@ -126,13 +243,7 @@ async function handleBotMessage(message) {
 
     let data;
     try {
-        const r = await fetch(DOWNLOADER, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: text }),
-            signal: AbortSignal.timeout(35000),
-        });
-        data = await r.json();
+        data = await callBotDownloader(text, platform);
     } catch(e) {
         return tg('sendMessage', { chat_id: chatId, text: '❌ API bağlantı hatası: ' + e.message });
     }
