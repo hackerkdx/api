@@ -63,6 +63,7 @@ app.get("/", (req, res) => {
 // ── TELEGRAM BOT ─────────────────────────────
 const BOT_TOKEN  = process.env.BOT_TOKEN;
 const TG_API     = `https://api.telegram.org/bot${BOT_TOKEN}`;
+const WEB_AD     = 'https://kandinlerx.rf.gd/downloader/';
 const RAIDEN_BASE = 'https://api.raiden.ovh';
 const MILAN_BASE  = 'https://api-opal-omega-76.vercel.app/api';
 
@@ -145,10 +146,14 @@ function normalizeBotResponse(raw, source, platform) {
         });
     } else if (platform === 'tiktok') {
         caption = null;
-        (raw.media || []).forEach(item => {
-            if (item.type && item.url) {
-                media.push({ type: item.type === 'mp3' ? 'audio' : 'video', url: item.url, thumbnail: raw.thumbnail });
-            }
+        // Raiden TK: media[] with type ('video'/'mp3') and url
+        const items = raw.media || [];
+        const videoItems = items.filter(i => i.type !== 'mp3');
+        const isSlideshow = videoItems.length > 1;
+        items.forEach(item => {
+            if (!item.type || !item.url) return;
+            const type = item.type === 'mp3' ? 'audio' : (isSlideshow ? 'image' : 'video');
+            media.push({ type, url: item.url, thumbnail: raw.thumbnail });
         });
     } else if (platform === 'douyin') {
         caption = raw.data?.title ?? null;
@@ -172,20 +177,21 @@ function normalizeBotResponse(raw, source, platform) {
             if (item.type && url) media.push({ type: item.type, url, thumbnail: item.thumbnail });
         });
     } else if (platform === 'facebook') {
-        // Raiden fb (photos)
-        if (raw.media) {
+        // Milan meta API: { success, data: { data: [{url, resolution, shouldRender, thumbnail}] } }
+        if (raw.success && raw.data?.data) {
+            caption = raw.data?.caption ?? null;
+            raw.data.data.forEach(item => {
+                if (!item.shouldRender && item.url && item.url.startsWith('http')) {
+                    media.push({ type: 'video', url: item.url, thumbnail: item.thumbnail });
+                }
+            });
+        }
+        // Raiden fb API: { status: true, media: [{type:'photo', viewer_image_uri}], caption }
+        if (!media.length && raw.media) {
             caption = raw.caption ?? null;
             raw.media.forEach(item => {
                 if (item.type === 'photo' && item.viewer_image_uri) {
                     media.push({ type: 'image', url: item.viewer_image_uri });
-                }
-            });
-        }
-        // Milan meta (videos)
-        if (raw.data?.data) {
-            raw.data.data.forEach(item => {
-                if (!item.shouldRender && item.url) {
-                    media.push({ type: 'video', url: item.url, thumbnail: item.thumbnail });
                 }
             });
         }
@@ -212,21 +218,40 @@ function normalizeBotResponse(raw, source, platform) {
     return { success: true, source, media, caption };
 }
 
+// ── MESAJ SİLME ─────────────────────────────
+async function deleteMessage(chatId, messageId) {
+    await tg('deleteMessage', { chat_id: chatId, message_id: messageId });
+}
+
+// ── MEDYA GRUBU GÖNDERİMİ ───────────────────
+async function sendMediaGroup(chatId, items) {
+    // Telegram max 10 medya/grup
+    const chunks = [];
+    for (let i = 0; i < items.length; i += 10) chunks.push(items.slice(i, i + 10));
+    for (const chunk of chunks) {
+        const r = await tg('sendMediaGroup', { chat_id: chatId, media: chunk });
+        if (!r.ok) console.error('sendMediaGroup failed:', r.description);
+        if (chunks.length > 1) await new Promise(r => setTimeout(r, 800));
+    }
+}
+
+// ── BOT MESAJ İŞLEYİCİ ──────────────────────
 async function handleBotMessage(message) {
-    const chatId   = message.chat.id;
-    const text     = (message.text || '').trim();
-    const name     = message.from?.first_name || 'Kullanıcı';
+    const chatId = message.chat.id;
+    const text   = (message.text || '').trim();
+    const name   = message.from?.first_name || 'Kullanıcı';
     if (!text) return;
 
+    const AD = `\n\n🌐 <a href="${WEB_AD}">KDX Downloader</a>`;
+
     if (text === '/start') {
-        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML',
-            text: `👋 Merhaba <b>${name}</b>!\n\n🔽 <b>KDX Downloader Bot</b>\n\nLink gönder, indireyim:\n• Instagram · TikTok · Douyin\n• Snapchat · Pinterest\n• X (Twitter) · Facebook\n\n📎 /help | 🌐 <a href="https://kandinlerx.rf.gd/downloader/">Web</a>`,
-            disable_web_page_preview: true });
+        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', disable_web_page_preview: true,
+            text: `Merhaba <b>${name}</b>,\n\n<b>KDX Downloader</b>'a hoş geldiniz.\n\nDesteklenen platformlardan içerik bağlantısı gönderin, dosyayı ileteyim.\n\n<b>Platformlar:</b>\nInstagram · TikTok · Douyin · Snapchat · Pinterest · X (Twitter) · Facebook\n\n/help — Kullanım kılavuzu${AD}` });
     }
+
     if (text === '/help') {
-        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML',
-            text: `ℹ️ <b>Nasıl Kullanılır?</b>\n\n1. İndirmek istediğin linki kopyala\n2. Bota gönder\n3. Birkaç saniye bekle\n\n⚠️ Yalnızca herkese açık içerikler desteklenir.`,
-        });
+        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', disable_web_page_preview: true,
+            text: `<b>Kullanım Kılavuzu</b>\n\n1. İndirmek istediğiniz içeriğin bağlantısını kopyalayın\n2. Bu bota gönderin\n3. Dosya birkaç saniye içinde iletilecektir\n\n<b>Notlar:</b>\n• Yalnızca herkese açık içerikler desteklenir\n• Dosya boyutu 50 MB ile sınırlıdır${AD}` });
     }
 
     let isUrl = false;
@@ -234,47 +259,76 @@ async function handleBotMessage(message) {
     const platform = detectPlatform(text);
 
     if (!isUrl || !platform) {
-        return tg('sendMessage', { chat_id: chatId,
-            text: '❌ Geçerli bir link gönder.\n\nDesteklenen: Instagram · TikTok · Douyin · Snapchat · Pinterest · X · Facebook' });
+        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', disable_web_page_preview: true,
+            text: `Geçerli bir bağlantı gönderiniz.\n\n<b>Desteklenen platformlar:</b>\nInstagram · TikTok · Douyin · Snapchat · Pinterest · X · Facebook${AD}` });
     }
 
-    await tg('sendChatAction', { chat_id: chatId, action: 'upload_video' });
-    await tg('sendMessage', { chat_id: chatId, text: '⏳ İndiriliyor...' });
+    // Kum saati gönder, ID'sini sakla
+    const waitMsg = await tg('sendMessage', { chat_id: chatId, text: '⏳' });
+    const waitMsgId = waitMsg?.result?.message_id;
 
     let data;
     try {
         data = await callBotDownloader(text, platform);
     } catch(e) {
-        return tg('sendMessage', { chat_id: chatId, text: '❌ API bağlantı hatası: ' + e.message });
+        if (waitMsgId) await deleteMessage(chatId, waitMsgId);
+        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', disable_web_page_preview: true,
+            text: `Bağlantı hatası oluştu. Lütfen tekrar deneyin.${AD}` });
     }
 
+    // Kum saatini sil
+    if (waitMsgId) await deleteMessage(chatId, waitMsgId);
+
     if (!data?.success) {
-        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML',
-            text: `❌ <b>Hata:</b> ${data?.message || 'Bilinmeyen hata.'}\n\n🌐 <a href="https://kandinlerx.rf.gd/downloader/">Web'den dene</a>`,
-            disable_web_page_preview: true });
+        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', disable_web_page_preview: true,
+            text: `İçerik alınamadı: ${data?.message || 'Bilinmeyen hata.'}${AD}` });
     }
 
     const media   = data.media   || [];
-    const caption = (data.caption || '').slice(0, 900);
+    const caption = data.caption || '';
     const source  = data.source  || platform;
 
-    if (!media.length) return tg('sendMessage', { chat_id: chatId, text: '⚠️ İndirilebilir medya bulunamadı.' });
+    if (!media.length) {
+        return tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', disable_web_page_preview: true,
+            text: `İndirilebilir medya bulunamadı.${AD}` });
+    }
 
-    let sent = 0;
-    for (const item of media) {
-        const url = getMediaUrl(item, source);
-        const cap = sent === 0 ? caption : '';
+    const visualMedia = media.filter(m => m.type === 'image' || m.type === 'video');
+    const audioMedia  = media.filter(m => m.type === 'audio');
+
+    // Birden fazla görsel → sendMediaGroup (album)
+    if (visualMedia.length > 1) {
+        const tgMedia = visualMedia.map((item, i) => ({
+            type:  item.type,
+            media: item.url,
+            ...(i === 0 && caption ? { caption: caption.slice(0, 1024), parse_mode: 'HTML' } : {}),
+            ...(item.type === 'video' ? { supports_streaming: true } : {}),
+        }));
+        await sendMediaGroup(chatId, tgMedia);
+    } else if (visualMedia.length === 1) {
+        const item = visualMedia[0];
         if (item.type === 'video') {
-            const r = await tg('sendVideo', { chat_id: chatId, video: url, caption: cap, supports_streaming: true });
-            if (!r.ok) await tg('sendDocument', { chat_id: chatId, document: url, caption: cap });
-        } else if (item.type === 'image') {
-            const r = await tg('sendPhoto', { chat_id: chatId, photo: url, caption: cap });
-            if (!r.ok) await tg('sendDocument', { chat_id: chatId, document: url, caption: cap });
-        } else if (item.type === 'audio') {
-            await tg('sendAudio', { chat_id: chatId, audio: url });
+            const r = await tg('sendVideo', { chat_id: chatId, video: item.url, supports_streaming: true });
+            if (!r.ok) await tg('sendDocument', { chat_id: chatId, document: item.url });
+        } else {
+            const r = await tg('sendPhoto', { chat_id: chatId, photo: item.url });
+            if (!r.ok) await tg('sendDocument', { chat_id: chatId, document: item.url });
         }
-        sent++;
-        if (sent % 5 === 0) await new Promise(r => setTimeout(r, 1000));
+    }
+
+    // Ses
+    for (const item of audioMedia) {
+        await tg('sendAudio', { chat_id: chatId, audio: item.url });
+    }
+
+    // Caption kopyalanabilir ayrı mesaj olarak
+    if (caption && caption.trim()) {
+        await tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', disable_web_page_preview: true,
+            text: `<code>${caption.slice(0, 3000).replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code>${AD}` });
+    } else {
+        // Caption yoksa sadece reklam
+        await tg('sendMessage', { chat_id: chatId, parse_mode: 'HTML', disable_web_page_preview: true,
+            text: AD.trim() });
     }
 }
 
