@@ -111,7 +111,7 @@ async function callBotDownloader(url, platform) {
         source = 'twitter';
     } else if (platform === 'facebook') {
         // video: /share/r/, photo: /share/
-        if (/\/share\/r\//i.test(url) || /fb\.watch/i.test(url)) {
+        if (/\/share\/v\//i.test(url) || /fb\.watch/i.test(url)) {
             apiUrl = `${MILAN_BASE}/meta/download?url=${encodeURIComponent(url)}`;
         } else {
             apiUrl = `${RAIDEN_BASE}/fb?url=${encodeURIComponent(url)}`;
@@ -296,24 +296,20 @@ async function handleBotMessage(message) {
     const visualMedia = media.filter(m => m.type === 'image' || m.type === 'video');
     const audioMedia  = media.filter(m => m.type === 'audio');
 
-    // Birden fazla görsel → sendMediaGroup (album)
-    if (visualMedia.length > 1) {
-        const tgMedia = visualMedia.map((item, i) => ({
-            type:  item.type,
-            media: item.url,
-            ...(i === 0 && caption ? { caption: caption.slice(0, 1024), parse_mode: 'HTML' } : {}),
-            ...(item.type === 'video' ? { supports_streaming: true } : {}),
-        }));
-        await sendMediaGroup(chatId, tgMedia);
-    } else if (visualMedia.length === 1) {
-        const item = visualMedia[0];
+    // Medya gönderimi
+    for (let i = 0; i < visualMedia.length; i++) {
+        const item = visualMedia[i];
+        let r;
         if (item.type === 'video') {
-            const r = await tg('sendVideo', { chat_id: chatId, video: item.url, supports_streaming: true });
-            if (!r.ok) await tg('sendDocument', { chat_id: chatId, document: item.url });
+            r = await tg('sendVideo', { chat_id: chatId, video: item.url, supports_streaming: true });
+            if (!r.ok) r = await tg('sendDocument', { chat_id: chatId, document: item.url });
         } else {
-            const r = await tg('sendPhoto', { chat_id: chatId, photo: item.url });
-            if (!r.ok) await tg('sendDocument', { chat_id: chatId, document: item.url });
+            r = await tg('sendPhoto', { chat_id: chatId, photo: item.url });
+            if (!r.ok) r = await tg('sendDocument', { chat_id: chatId, document: item.url });
         }
+        if (!r.ok) console.error(`Medya gönderilemedi [${i}]:`, r.description, item.url.slice(0,80));
+        // Çok sayıda medyada kısa bekleme
+        if (i > 0 && i % 5 === 0) await new Promise(r => setTimeout(r, 1000));
     }
 
     // Ses
