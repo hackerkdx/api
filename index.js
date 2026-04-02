@@ -76,6 +76,49 @@ async function tg(method, params = {}) {
     return r.json();
 }
 
+// ── DOSYA İNDİR + TELEGRAM'A YÜKLE ─────────
+async function sendMediaAsBuffer(chatId, item, caption) {
+    try {
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://www.tiktok.com/',
+            'Accept': '*/*',
+        };
+        const res = await fetch(item.url, { headers, signal: AbortSignal.timeout(40000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const contentType = res.headers.get('content-type') || '';
+        const buffer = await res.arrayBuffer();
+        const blob = new Blob([buffer], { type: contentType });
+
+        // FormData ile Telegram'a gönder
+        const form = new FormData();
+        form.append('chat_id', String(chatId));
+        if (caption) form.append('caption', caption.slice(0, 1024));
+
+        let method;
+        if (item.type === 'video' || contentType.includes('video')) {
+            method = 'sendVideo';
+            form.append('video', blob, 'video.mp4');
+            form.append('supports_streaming', 'true');
+        } else if (item.type === 'audio') {
+            method = 'sendAudio';
+            form.append('audio', blob, 'audio.mp3');
+        } else {
+            method = 'sendPhoto';
+            form.append('photo', blob, 'photo.jpg');
+        }
+
+        const r = await fetch(`${TG_API}/${method}`, { method: 'POST', body: form });
+        const result = await r.json();
+        if (!result.ok) throw new Error(result.description);
+        return true;
+    } catch(e) {
+        console.error('sendMediaAsBuffer error:', e.message);
+        return false;
+    }
+}
+
 const PLATFORMS = [
     { name: 'instagram', regex: /instagram\.com/ },
     { name: 'tiktok',    regex: /tiktok\.com|vm\.tiktok|vt\.tiktok/ },
@@ -214,7 +257,10 @@ function normalizeBotResponse(raw, source, platform) {
         else if (raw.data?.thumbnail) media.push({ type: 'image', url: raw.data.thumbnail });
     }
 
-    if (!media.length) return { success: false, message: 'İndirilebilir medya bulunamadı.' };
+    console.log(`[BOT] platform=${platform} raw_keys=${Object.keys(raw||{}).join(',')} media_count=${media.length}`);
+    if (raw?.media) console.log(`[BOT] raw.media sample:`, JSON.stringify(raw.media[0]).slice(0,200));
+    if (raw?.data) console.log(`[BOT] raw.data keys:`, Object.keys(raw.data||{}).join(','));
+    if (!media.length) return { success: false, message: `İndirilebilir medya bulunamadı. (platform=${platform})` };
     return { success: true, source, media, caption };
 }
 
@@ -296,19 +342,31 @@ async function handleBotMessage(message) {
     const visualMedia = media.filter(m => m.type === 'image' || m.type === 'video');
     const audioMedia  = media.filter(m => m.type === 'audio');
 
-    // Medya gönderimi
+    // Medya gönderimi — önce URL ile dene, başarısız olursa buffer ile
     for (let i = 0; i < visualMedia.length; i++) {
         const item = visualMedia[i];
+        const cap  = i === 0 ? '' : ''; // caption ayrı mesajda
+
+        // Önce direkt URL ile dene
         let r;
         if (item.type === 'video') {
             r = await tg('sendVideo', { chat_id: chatId, video: item.url, supports_streaming: true });
-            if (!r.ok) r = await tg('sendDocument', { chat_id: chatId, document: item.url });
         } else {
             r = await tg('sendPhoto', { chat_id: chatId, photo: item.url });
-            if (!r.ok) r = await tg('sendDocument', { chat_id: chatId, document: item.url });
         }
-        if (!r.ok) console.error(`Medya gönderilemedi [${i}]:`, r.description, item.url.slice(0,80));
-        // Çok sayıda medyada kısa bekleme
+
+        // Başarısız → buffer ile indir+gönder
+        if (!r.ok) {
+            console.log(`[BOT] URL başarısız, buffer deneniyor [${i}]:`, r.description);
+            const ok = await sendMediaAsBuffer(chatId, item, cap);
+            if (!ok) {
+                console.error(`[BOT] Buffer da başarısız [${i}]`);
+                // Son çare: belge olarak
+                const rd = await tg('sendDocument', { chat_id: chatId, document: item.url });
+                if (!rd.ok) console.error(`[BOT] sendDocument da başarısız:`, rd.description);
+            }
+        }
+
         if (i > 0 && i % 5 === 0) await new Promise(r => setTimeout(r, 1000));
     }
 
