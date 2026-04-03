@@ -347,7 +347,7 @@ async function handleBotMessage(message) {
         const item = visualMedia[i];
         const cap  = i === 0 ? '' : ''; // caption ayrı mesajda
 
-        // Önce direkt URL ile dene
+        // Önce direkt URL ile dene — caption yok, ayrı mesajda gönderilecek
         let r;
         if (item.type === 'video') {
             r = await tg('sendVideo', { chat_id: chatId, video: item.url, supports_streaming: true });
@@ -358,7 +358,7 @@ async function handleBotMessage(message) {
         // Başarısız → buffer ile indir+gönder
         if (!r.ok) {
             console.log(`[BOT] URL başarısız, buffer deneniyor [${i}]:`, r.description);
-            const ok = await sendMediaAsBuffer(chatId, item, cap);
+            const ok = await sendMediaAsBuffer(chatId, item, '');
             if (!ok) {
                 console.error(`[BOT] Buffer da başarısız [${i}]`);
                 // Son çare: belge olarak
