@@ -154,7 +154,7 @@ async function callBotDownloader(url, platform) {
         source = 'twitter';
     } else if (platform === 'facebook') {
         // video: /share/r/, photo: /share/
-        if (/\/share\/v\//i.test(url) || /fb\.watch/i.test(url)) {
+        if (/\/share\/[vr]\//i.test(url) || /fb\.watch/i.test(url)) {
             apiUrl = `${MILAN_BASE}/meta/download?url=${encodeURIComponent(url)}`;
         } else {
             apiUrl = `${RAIDEN_BASE}/fb?url=${encodeURIComponent(url)}`;
